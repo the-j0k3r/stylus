@@ -107,7 +107,7 @@ const styleMan = (() => {
       if (ready.then) await ready;
       style = mergeWithMapped(style);
       style.updateDate = Date.now();
-      return handleSave(await saveStyle(style), 'editSave');
+      return handleSave(await saveStyle(style), {reason: 'editSave'});
     },
 
     /** @returns {Promise<?StyleObj>} */
@@ -223,7 +223,7 @@ const styleMan = (() => {
       const events = await db.exec('putMany', items);
       return Promise.all(items.map((item, i) => {
         afterSave(item, events[i]);
-        return handleSave(item, 'import');
+        return handleSave(item, {reason: 'import'});
       }));
     },
 
@@ -240,7 +240,7 @@ const styleMan = (() => {
       if (url) style.url = style.installationUrl = url;
       style.originalDigest = await calcStyleDigest(style);
       // FIXME: update updateDate? what about usercss config?
-      return handleSave(await saveStyle(style), reason);
+      return handleSave(await saveStyle(style), {reason});
     },
 
     /** @returns {Promise<?StyleObj>} */
@@ -264,7 +264,7 @@ const styleMan = (() => {
       if (diff < 0) {
         doc.id = await db.exec('put', doc);
         uuidIndex.set(doc._id, doc.id);
-        return handleSave(doc, 'sync');
+        return handleSave(doc, {reason: 'sync'});
       }
     },
 
@@ -272,7 +272,7 @@ const styleMan = (() => {
     async toggle(id, enabled) {
       if (ready.then) await ready;
       const style = Object.assign({}, id2style(id), {enabled});
-      handleSave(await saveStyle(style), 'toggle', false);
+      handleSave(await saveStyle(style), {reason: 'toggle', codeIsUpdated: false});
       return id;
     },
 
@@ -369,39 +369,48 @@ const styleMan = (() => {
         case 'revoke':
           await tokenMan.revokeToken('userstylesworld', style.id);
           style._usw = {};
-          handleSave(await saveStyle(style), 'success-revoke', true);
+          handleSave(await saveStyle(style), {reason: 'success-revoke', codeIsUpdated: true});
           break;
 
-        case 'publish':
+        case 'publish': {
           if (!style._usw || !style._usw.token) {
-            // Ensures just the style does have the _isUswLinked property as `true`.
             for (const {style: someStyle} of dataMap.values()) {
               if (someStyle._id === style._id) {
-                someStyle._isUswLinked = true;
-                someStyle.sourceCode = style.sourceCode;
-                const {metadata} = await API.worker.parseUsercssMeta(style.sourceCode);
+                someStyle.tmpSourceCode = style.sourceCode;
+                let metadata = {};
+                try {
+                  const {metadata: tmpMetadata} = await API.worker.parseUsercssMeta(style.sourceCode);
+                  metadata = tmpMetadata;
+                } catch (err) {
+                  console.log(err);
+                }
                 someStyle.metadata = metadata;
               } else {
-                delete someStyle._isUswLinked;
-                delete someStyle.sourceCode;
+                delete someStyle.tmpSourceCode;
                 delete someStyle.metadata;
               }
-              handleSave(await saveStyle(someStyle), null, null, false);
+              handleSave(await saveStyle(someStyle), {broadcast: false});
             }
             style._usw = {
-              token: await tokenMan.getToken('userstylesworld', true, style),
+              token: await tokenMan.getToken('userstylesworld', true, style.id),
             };
 
-            delete style._isUswLinked;
-            delete style.sourceCode;
+            delete style.tmpSourceCode;
             delete style.metadata;
             for (const [k, v] of Object.entries(await retrieveStyleInformation(style._usw.token))) {
               style._usw[k] = v;
             }
-            handleSave(await saveStyle(style), 'success-publishing', true);
+            handleSave(await saveStyle(style), {reason: 'success-publishing', codeIsUpdated: true});
           }
-          uploadStyle(style);
+
+          const returnResult = await uploadStyle(style);
+          // USw prefix errors with `Error:`.
+          if (returnResult.startsWith('Error:')) {
+            style._usw.publishingError = returnResult;
+            handleSave(await saveStyle(style), {reason: 'publishing-failed', codeIsUpdated: true});
+          }
           break;
+        }
       }
     });
   }
@@ -414,7 +423,7 @@ const styleMan = (() => {
       throw new Error('The rule already exists');
     }
     style[type] = list.concat([rule]);
-    return handleSave(await saveStyle(style), 'styleSettings');
+    return handleSave(await saveStyle(style), {reason: 'styleSettings'});
   }
 
   async function removeIncludeExclude(type, id, rule) {
@@ -425,7 +434,7 @@ const styleMan = (() => {
       return;
     }
     style[type] = list.filter(r => r !== rule);
-    return handleSave(await saveStyle(style), 'styleSettings');
+    return handleSave(await saveStyle(style), {reason: 'styleSettings'});
   }
 
   function broadcastStyleUpdated(style, reason, method = 'styleUpdated', codeIsUpdated = true) {
@@ -491,7 +500,7 @@ const styleMan = (() => {
     return style;
   }
 
-  function handleSave(style, reason, codeIsUpdated, broadcast = true) {
+  function handleSave(style, {reason, codeIsUpdated, broadcast = true}) {
     const data = id2data(style.id);
     const method = data ? 'styleUpdated' : 'styleAdded';
     if (!data) {

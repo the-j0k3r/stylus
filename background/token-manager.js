@@ -78,8 +78,8 @@ const tokenMan = (() => {
       return AUTH[name].clientId;
     },
 
-    async getToken(name, interactive, style) {
-      const k = tokenMan.buildKeys(name, style.id);
+    async getToken(name, interactive, styleId) {
+      const k = tokenMan.buildKeys(name, styleId);
       const obj = await chromeLocal.get(k.LIST);
       if (obj[k.TOKEN]) {
         if (!obj[k.EXPIRE] || Date.now() < obj[k.EXPIRE]) {
@@ -92,7 +92,7 @@ const tokenMan = (() => {
       if (!interactive) {
         throw new Error(`Invalid token: ${name}`);
       }
-      const accessToken = authUser(name, k, interactive);
+      const accessToken = authUser(name, k, interactive, styleId ? {vendor_data: styleId} : {});
       return accessToken;
     },
 
@@ -133,17 +133,17 @@ const tokenMan = (() => {
     return handleTokenResult(result, k);
   }
 
-  async function authUser(name, k, interactive = false) {
+  async function authUser(name, k, interactive = false, extraQuery = {}) {
     await require(['/vendor/webext-launch-web-auth-flow/webext-launch-web-auth-flow.min']);
     /* global webextLaunchWebAuthFlow */
     const provider = AUTH[name];
     const state = Math.random().toFixed(8).slice(2);
-    const query = {
+    const query = Object.assign(extraQuery, {
       response_type: provider.flow,
       client_id: provider.clientId,
       redirect_uri: provider.redirect_uri || chrome.identity.getRedirectURL(),
       state,
-    };
+    });
     if (provider.scopes) {
       query.scope = provider.scopes.join(' ');
     }
